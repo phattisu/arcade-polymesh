@@ -50,6 +50,14 @@ namespace Polymesh {
         //% block="fast"
         Fast = 1,
     }
+    export enum MeshFlags {
+        //% block="Invisible"
+        Invisible = 0,
+        //% block="Non culling"
+        Noncull = 1,
+        //% block="Back face"
+        Backface = 2,
+    }
 
     //% blockid=poly_sorttype
     //% block="set sorting method to $method"
@@ -67,11 +75,12 @@ namespace Polymesh {
     export function newmesh() { return new mesh() }
 
     export class mesh {
-        faces: { indices: number[], color: number, img?: Image }[]
-        points: { x: number, y: number, z: number }[]
-        pivot: { x: number, y: number, z: number}
-        rot: { x: number, y: number, z: number }
-        pos: { x: number, y: number, z: number, vx: number, vy: number, vz: number}
+        public faces: { indices: number[], color: number, img?: Image }[]
+        public points: { x: number, y: number, z: number }[]
+        public pivot: { x: number, y: number, z: number}
+        public rot: { x: number, y: number, z: number }
+        public pos: { x: number, y: number, z: number, vx: number, vy: number, vz: number}
+        flag: { invisible: boolean, noncull: boolean, backface: boolean}
         __home__() {
             forever(() => {
                 const delta = game.currentScene().eventContext.deltaTimeMillis
@@ -87,8 +96,36 @@ namespace Polymesh {
             this.pivot = { x: 0, y: 0, z: 0 }
             this.rot = { x: 0, y: 0, z: 0 }
             this.pos = { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0 }
-            
+            this.flag = { invisible: false, noncull: false, backface: false }
+
             this.__home__()
+        }
+
+        //% blockid=poly_flag_set
+        //% block=" $this set flag of $flag right? $ok=toggleYesNo"
+        //% this.shadow=variables_get this.defl=myMesh
+        //% group="Flag mesh"
+        //% weight=10
+        public setFlag(flag: MeshFlags, ok: boolean) {
+            switch (flag) {
+                case 0: default: this.flag.invisible = ok; break
+                case 1: this.flag.noncull = ok; break
+                case 2: this.flag.backface = ok; break
+            }
+        }
+
+        //% blockid=poly_flag_get
+        //% block=" $this get flag of $flag"
+        //% this.shadow=variables_get this.defl=myMesh
+        //% group="Flag mesh"
+        //% weight=5
+        public getFlag(flag: MeshFlags) {
+            switch (flag) {
+                case 0: default: return this.flag.invisible;
+                case 1: return this.flag.noncull;
+                case 2: return this.flag.backface;
+            }
+            return false
         }
 
         //% blockid=poly_addvertice
@@ -350,27 +387,31 @@ namespace Polymesh {
     }
 
     //% blockid=poly_rendermesh_all
-    //% block=" $plms render all meshes to $image=screen_image_picker|| as inner? $inner=toggleYesNo and no culling? $nocull=toggleYesNo and line render color? $linecolor=colorindexpicker"
+    //% block=" $plms render all meshes to $image=screen_image_picker|| as line render color? $linecolor=colorindexpicker"
     //% plms.shadow=variables_get plms.defl=myMeshes
     //% group="render"
     //% weight=9
-    export function renderAll(plms: mesh[], image: Image, inner?: boolean, nocull?: boolean, linecolor?: number) {
-        if (plms.length <= 0) return;
+    export function renderAll(plms: mesh[], image: Image, linecolor?: number) {
+        if (!plms || !image || plms.length <= 0) return;
 
         const depths = plms.map(plm => meshDepthZ(plm));
         const sorted = plms.map((m, i) => ({ mesh: m, depth: depths[i] }));
-        sorted.sort((a, b) => b.depth - a.depth);
-        for (const m of sorted) render(m.mesh, image, inner, nocull, linecolor);
+        switch (sort) {
+            case 0: sorted.sort((a, b) => b.depth - a.depth); break
+            case 1: introSort(sorted, (a, b) => b.depth - a.depth); break
+        }
+        for (const m of sorted) if (!m.mesh.flag.invisible) render(m.mesh, image, linecolor);
     }
 
     //% blockid=poly_rendermesh
-    //% block=" $plm render to $image=screen_image_picker|| as inner? $inner=toggleYesNo and no culling? $nocull=toggleYesNo and line render color? $linecolor=colorindexpicker"
+    //% block=" $plm render to $image=screen_image_picker|| as line render color? $linecolor=colorindexpicker"
     //% plm.shadow=variables_get plm.defl=myMesh
     //% group="render"
     //% weight=10
-    export function render(plm: mesh, image: Image, inner?: boolean, nocull?: boolean, linecolor?: number) {
-        if (plm.points.length <= 0 || plm.faces.length <= 0) return;
-        
+    export function render(plm: mesh, image: Image, linecolor?: number) {
+        if (!plm || !image || plm.points.length <= 0 || plm.faces.length <= 0) return;
+        if (plm.flag.invisible) return;
+
         const centerX = image.width >> 1;
         const centerY = image.height >> 1;
 
@@ -414,17 +455,17 @@ namespace Polymesh {
         const tris = plm.faces.slice();
         switch (sort) {
             case 0: tris.sort((a, b) => avgZ(rotated, b.indices) - avgZ(rotated, a.indices)); break
-            case 1: default: introSort(tris, rotated); break
+            case 1: default: introSort(tris, (a, b) => avgZ(rotated, b.indices) - avgZ(rotated, a.indices)); break
         }
         
         // Render
         for (const t of tris) {
             const inds = t.indices;
             if (inds.some(i => rotated[i].z < -Math.abs(dist))) continue;
-            if (inds.every(i => (rotated[i].x < 0 || rotated[i].x >= image.width) || (rotated[i].y < 0 || rotated[i].y >= image.height))) continue;
+            if (inds.every(i => (isOutOfArea(rotated[i].x, rotated[i].y, image.width, image.height)))) continue;
             
             // Backface culling
-            if (!nocull) if (!rotated.some((ro) => (inds.every(i => inner ? rotated[i].z > ro.z : rotated[i].z < ro.z)))) continue;
+            if (!plm.flag.noncull) if (isFaceVisible(rotated, inds, plm.flag.backface)) continue;
 
             // Draw line canvas when have line color index
             if (linecolor && linecolor > 0) {
@@ -477,6 +518,31 @@ namespace Polymesh {
         
     }
 
+    function isOutOfArea(x: number, y: number, width: number, height: number) {
+        return isOutOfRange(x, width) || isOutOfRange(y, height)
+    }
+
+    function isOutOfRange(x: number, range: number) {
+        return x < 0 || x >= range
+    }
+
+    function isFaceVisible(rotated: { z: number }[], indices: number[], inner?: boolean): boolean {
+        // Simple normal calculation for culling
+        if (indices.length > 0) {
+            const zs = indices.map(ind => rotated[ind].z)
+
+            // Average depth comparison
+            const avgZ = zs.reduce((sum, z) => sum + z, 0) / zs.length;
+            const otherZs = rotated.filter((_, i) => indices.indexOf(i) < 0).map(p => p.z);
+
+            if (otherZs.length > 0) {
+                const otherAvg = otherZs.reduce((sum, z) => sum + z, 0) / otherZs.length;
+                return inner ? avgZ < otherAvg : avgZ > otherAvg;
+            }
+        }
+        return true;
+    }
+
     function meshDepthZ(plm: mesh): number {
         let x = plm.pos.x - camx;
         let y = plm.pos.y - camy;
@@ -498,84 +564,94 @@ namespace Polymesh {
         return z;
     }
 
-    function introSort(arr: { indices: number[] }[], rot: { z: number }[]) {
-        const maxDepth = 2 * Math.ceil(Math.log(arr.length) / Math.log(2));
-        introsortUtil(arr, 0, arr.length - 1, maxDepth, rot);
+    export function introSort<T>(
+        arr: T[],
+        compare: (a: T, b: T) => number
+    ): void {
+        const maxDepth = 2 * Math.floor(Math.log(arr.length) / Math.log(2));
+        introsortUtil(arr, 0, arr.length - 1, maxDepth, compare);
     }
 
-    function introsortUtil(arr: { indices: number[] }[], start: number, end: number, depthLimit: number, rot: { z: number }[]) {
+    function introsortUtil<T>(
+        arr: T[],
+        start: number,
+        end: number,
+        depthLimit: number,
+        compare: (a: T, b: T) => number
+    ): void {
         const size = end - start + 1;
+        if (size <= 16) { insertionSort(arr, start, end, compare);
+        return; }
 
-        if (size < 16) {
-            insertionSort(arr, start, end, rot);
-            return;
-        }
+        if (depthLimit === 0) { heapSort(arr, start, end, compare);
+        return; }
 
-        if (depthLimit === 0) {
-            heapSort(arr, start, end, rot);
-            return;
-        }
-
-        const pivot = partitionIntro(arr, start, end, avgZ(rot, arr[start + ((end - start) >> 1)].indices), rot);
-        introsortUtil(arr, start, pivot - 1, depthLimit - 1, rot);
-        introsortUtil(arr, pivot, end, depthLimit - 1, rot);
+        const pivot = medianOfThree(arr, start, start + ((end - start) >> 1), end, compare);
+        const p = partition(arr, start, end, pivot, compare);
+        introsortUtil(arr, start, p - 1, depthLimit - 1, compare);
+        introsortUtil(arr, p + 1, end, depthLimit - 1, compare);
     }
 
-    function insertionSort(arr: { indices: number[] }[], start: number, end: number, rot: { z: number }[]) {
+    function insertionSort<T>(arr: T[], start: number, end: number, compare: (a: T, b: T) => number) {
         for (let i = start + 1; i <= end; i++) {
             const key = arr[i];
             let j = i - 1;
-            while (j >= start && avgZ(rot, arr[j].indices) < avgZ(rot, key.indices)) {
-                arr[j + 1] = arr[j];
-                j--;
-            }
+            while (j >= start && compare(arr[j], key) > 0) arr[j + 1] = arr[j], j--;
             arr[j + 1] = key;
         }
     }
 
-    function heapSort(arr: { indices: number[] }[], start: number, end: number, rot: { z: number }[]) {
-        const heapSize = end - start + 1;
+    function heapSort<T>(arr: T[], start: number, end: number, compare: (a: T, b: T) => number) {
+        const size = end - start + 1;
 
-        for (let i = Math.floor(heapSize / 2) - 1; i >= 0; i--) {
-            heapify(arr, heapSize, i, start, rot);
-        }
-
-        for (let i = heapSize - 1; i > 0; i--) {
-            const tmp = arr[start];
-            arr[start] = arr[start + i];
-            arr[start + i] = tmp;
-            heapify(arr, i, 0, start, rot);
-        }
-    }
-
-    function heapify(arr: { indices: number[] }[], size: number, root: number, offset: number, rot: { z: number }[]) {
-        let largest = root;
-        const left = 2 * root + 1;
-        const right = 2 * root + 2;
-
-        if (left < size && avgZ(rot, arr[offset + left].indices) > avgZ(rot, arr[offset + largest].indices)) largest = left;
-        if (right < size && avgZ(rot, arr[offset + right].indices) > avgZ(rot, arr[offset + largest].indices)) largest = right;
-        if (largest !== root) {
-            const tmp = arr[offset + root];
-            arr[offset + root] = arr[offset + largest];
-            arr[offset + largest] = tmp;
-            heapify(arr, size, largest, offset, rot);
-        }
-    }
-
-    function partitionIntro(arr: { indices: number[] }[], left: number, right: number, pivot: number, rot: { z: number }[]) {
-        while (left <= right) {
-            while (avgZ(rot, arr[left].indices) > pivot) left++;
-            while (avgZ(rot, arr[right].indices) < pivot) right--;
-            if (left <= right) {
-                const tmp = arr[left];
-                arr[left] = arr[right];
-                arr[right] = tmp;
-                left++;
-                right--;
+        function siftDown(i: number, max: number) {
+            let largest = i;
+            while (true) {
+                const left = 2 * i + 1, right = 2 * i + 2;
+                if (left < max && compare(arr[start + left], arr[start + largest]) > 0) largest = left;
+                if (right < max && compare(arr[start + right], arr[start + largest]) > 0) largest = right;
+                if (largest === i) break;
+                [arr[start + i], arr[start + largest]] = [arr[start + largest], arr[start + i]]
+                i = largest, largest = i;
             }
         }
-        return left;
+
+        for (let i = Math.floor(size / 2) - 1; i >= 0; i--) siftDown(i, size);
+
+        for (let i = size - 1; i > 0; i--) [arr[start], arr[start + i]] = [arr[start + i], arr[start]], siftDown(0, i);
+    }
+
+    function partition<T>(
+        arr: T[],
+        low: number,
+        high: number,
+        pivot: T,
+        compare: (a: T, b: T) => number
+    ): number {
+        while (low <= high) {
+            while (compare(arr[low], pivot) < 0) low++;
+            while (compare(arr[high], pivot) > 0) high--;
+            if (low <= high) [arr[low], arr[high]] = [arr[high], arr[low]], low++, high--;
+        }
+        return low;
+    }
+
+    function medianOfThree<T>(
+        arr: T[],
+        a: number,
+        b: number,
+        c: number,
+        compare: (a: T, b: T) => number
+    ): T {
+        if (compare(arr[a], arr[b]) < 0) {
+            if (compare(arr[b], arr[c]) < 0) return arr[b];
+            else if (compare(arr[a], arr[c]) < 0) return arr[c];
+            else return arr[a];
+        } else {
+            if (compare(arr[a], arr[c]) < 0) return arr[a];
+            else if (compare(arr[b], arr[c]) < 0) return arr[c];
+            else return arr[b];
+        }
     }
 
     function avgZ(rot: { z: number }[], inds: number[]): number {
@@ -588,10 +664,10 @@ namespace Polymesh {
         for (let y = 0; y < src.height; y++) {
             for (let x = 0; x < src.width; x++) {
                 const col = src.getPixel(src.width - x, src.height - y);
-                if (!col || (col && col <= 0)) continue;
+                if (!col || col <= 0) continue;
                 const sx = (s: number, m?: boolean) => Math.trunc((1 - ((y * s) + (m ? s : 0) - (s / 2)) / (src.height * s)) * (X1 + ((x * s) + (m ? s : 0) - (s / 2)) / (src.width * s) * (X2 - X1)) + ((y * s) + (m ? s : 0) - (s / 2)) / (src.height * s) * (X3 + ((x * s) + (m ? s : 0) - (s / 2)) / (src.width * s) * (X4 - X3)))
                 const sy = (s: number, m?: boolean) => Math.trunc((1 - ((x * s) + (m ? s : 0) - (s / 2)) / (src.width * s)) * (Y1 + ((y * s) + (m ? s : 0) - (s / 2)) / (src.height * s) * (Y3 - Y1)) + ((x * s) + (m ? s : 0) - (s / 2)) / (src.width * s) * (Y2 + ((y * s) + (m ? s : 0) - (s / 2)) / (src.height * s) * (Y4 - Y2)))
-                if ((sx(zoom, true) < 0 || sx(zoom) >= dest.width) || (sy(zoom, true) < 0 || sy(zoom) >= dest.height)) continue;
+                if (isOutOfArea(sx(zoom), sy(zoom), dest.width, dest.height) || isOutOfArea(sx(zoom, true), sy(zoom, true), dest.width, dest.height)) continue;
                 helpers.imageFillTriangle(dest, sx(zoom, true), sy(zoom), sx(zoom), sy(zoom), sx(zoom, true), sy(zoom, true), col)
                 helpers.imageFillTriangle(dest, sx(zoom), sy(zoom, true), sx(zoom), sy(zoom), sx(zoom, true), sy(zoom, true), col)
             }
